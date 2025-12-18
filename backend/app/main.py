@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
 # In-memory storage
 sensor_data_store: List["SensorData"] = []
@@ -17,6 +17,16 @@ default_thresholds = {
     "pressure_max": 110.0,
     "max_rpm": 2000
 }
+
+class Alert(BaseModel):
+    sensor_id: str
+    timestamp: str
+    issues_detected: List[str]
+
+class PredictionResponse(BaseModel):
+    checked_records: int
+    alerts_found: int
+    alerts: List[Alert]
 
 # Create FastAPI app
 app_kei = FastAPI(
@@ -124,47 +134,53 @@ def predict_failure(recent: int = 5):
     """
     Analyze recent sensor data and detect potential failures
     """
+
     if len(sensor_data_store) == 0:
-        return {"message": "No sensor data available"}
-    
+        # Return an empty but valid response
+        return PredictionResponse(
+            checked_records=0,
+            alerts_found=0,
+            alerts=[]
+        )
+
+    # Take the last `recent` records
     recent_data = sensor_data_store[-recent:]
-    alerts = []
+    alerts_list = []
 
     for reading in recent_data:
         issues = []
 
-        if reading.temperature > temp_threshold:
+        # Get sensor-specific thresholds or use defaults
+        thresholds = sensor_config_store.get(reading.sensor_id, default_thresholds)
+
+        if reading.temperature > thresholds["max_temperature"]:
             issues.append("High temperature")
-
-        if reading.vibration > vibration_threshold:
+        if reading.vibration > thresholds["max_vibration"]:
             issues.append("High vibration")
+        if reading.pressure < thresholds["pressure_min"] or reading.pressure > thresholds["pressure_max"]:
+            issues.append("Pressure out of range")
+        if reading.rpm > thresholds["max_rpm"]:
+            issues.append("RPM too high")
 
-        if reading.pressure < pressure_min or reading.pressure > pressure_max:
-
-            issues.append("Pressure  out of Range")
-
-        if reading.rpm > rpm_threshold:
-            issues.append("rpm too high")
-        
         if issues:
-            alerts.append({
-                "sensor_id": reading.sensor_id,
-                "timestamp": reading.timestamp,
-                "issues_detected": issues
-            })
+            alerts_list.append(Alert(
+                sensor_id=reading.sensor_id,
+                timestamp=reading.timestamp,
+                issues_detected=issues
+            ))
 
-    return{
-        "checked_records": len(recent_data),
-        "alerts_found": len (alerts),
-        "alerts": alerts
-    }
+    return PredictionResponse(
+        checked_records=len(recent_data),
+        alerts_found=len(alerts_list),
+        alerts=alerts_list
+    )
 
 @app_kei.post("/sensor_config")
 def register_sensor_config(config: SensorConfig):
     """
     Register or update configuration thresholds for a sensor.
     """
-    sensor_config_store[config.sensor_id] = config
+    sensor_config_store[config.sensor_id] = config.model_dump()
     return {
         "message": "Sensor configuration saved",
         "sensor_id": config.sensor_id

@@ -1,0 +1,6 @@
+These are the requirements for my project:
+
+fastapi
+uvicorn
+pydantic
+requests
