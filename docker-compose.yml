@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    container_name: pm_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: predictive_maintenance
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: pm_backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:test@db:5432/predictive_maintenance
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app_kei --host 0.0.0.0 --port 8000
+
+volumes:
+  postgres_data:

@@ -7,56 +7,80 @@ API_URL = "http://127.0.0.1:8000/sensor_data"
 
 SENSORS = ["motor_1", "motor_2"]
 SEND_INTERVAL_SEC = 2
-ANOMALY_PROBABILITY = 0.1  # 10% chance per reading
 
-# Normal operating ranges
-NORMAL_RANGES = {
-    "temperature": (60, 80),     # °C
-    "vibration": (0.01, 0.05),   # mm/s
-    "pressure": (90, 110),       # PSI
-    "rpm": (1400, 1600)
+#moved from random range-based sampling to a stateful drift model because predictive maintenance relies on temporal trends rather than isolated anomalies.
+# Gradual degradation per cycle (simulates wear)
+TEMP_DRIFT_PER_CYCLE = 0.2
+VIBRATION_DRIFT_PER_CYCLE = 0.002
+
+# Probability of sudden fault (rare but possible)
+ANOMALY_PROBABILITY = 0.05
+
+# Initial sensor state (IMPORTANT: persistent values)
+sensor_state = {
+    sensor: {
+        "temperature": random.uniform(60, 70),
+        "vibration": random.uniform(0.01, 0.02),
+        "pressure": random.uniform(95, 105),
+        "rpm": random.randint(1400, 1600)
+    }
+    for sensor in SENSORS
 }
 
-# Failure-like ranges
-ANOMALY_RANGES = {
-    "temperature": (90, 110),
-    "vibration": (0.2, 0.5),
-    "pressure": (120, 140),
-    "rpm": (2000, 2500)
-}
-
-def generate_value(metric):
-    if random.random() < ANOMALY_PROBABILITY:
-        low, high = ANOMALY_RANGES[metric]
-        return random.uniform(low, high), True
-    else:
-        low, high = NORMAL_RANGES[metric]
-        return random.uniform(low, high), False
+def classify_severity(temp, vib, pressure, rpm):
+    """
+    Determines severity level based on sensor values.
+    """
+    if temp > 95 or vib > 0.15 or pressure > 130 or rpm > 2200:
+        return "critical"
+    elif temp > 85 or vib > 0.08 or pressure > 115 or rpm > 1800:
+        return "warning"
+    return "normal"
 
 while True:
-    for sensor_id in SENSORS:
-        temp, temp_anom = generate_value("temperature")
-        vib, vib_anom = generate_value("vibration")
-        pres, pres_anom = generate_value("pressure")
-        rpm, rpm_anom = generate_value("rpm")
+    for sensor_id, state in sensor_state.items():
 
-        is_anomaly = any([temp_anom, vib_anom, pres_anom, rpm_anom])
+        # Gradual drift (long-term degradation)
+        state["temperature"] += TEMP_DRIFT_PER_CYCLE + random.uniform(-0.1, 0.1)
+        state["vibration"] += VIBRATION_DRIFT_PER_CYCLE + random.uniform(-0.001, 0.001)
+
+        # Stable signals with noise
+        state["pressure"] += random.uniform(-1, 1)
+        state["rpm"] += random.randint(-30, 30)
+
+        # Rare sudden anomaly
+        if random.random() < ANOMALY_PROBABILITY:
+            state["temperature"] += random.uniform(5, 10)
+            state["vibration"] += random.uniform(0.05, 0.1)
+
+        severity = classify_severity(
+            state["temperature"],
+            state["vibration"],
+            state["pressure"],
+            state["rpm"]
+        )
 
         payload = {
             "sensor_id": sensor_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "temperature": round(temp, 2),
-            "vibration": round(vib, 3),
-            "pressure": round(pres, 2),
-            "rpm": int(rpm)
+            "temperature": round(state["temperature"], 2),
+            "vibration": round(state["vibration"], 4),
+            "pressure": round(state["pressure"], 2),
+            "rpm": int(state["rpm"]),
+            "severity": severity
         }
 
         try:
             response = requests.post(API_URL, json=payload, timeout=2)
             response.raise_for_status()
 
-            status = "ANOMALY" if is_anomaly else "normal"
-            print(f"[{sensor_id}] {status} | {response.status_code}")
+            print(
+                f"[{sensor_id}] {severity.upper():8} | "
+                f"T={payload['temperature']}°C "
+                f"V={payload['vibration']} "
+                f"P={payload['pressure']} "
+                f"RPM={payload['rpm']}"
+            )
 
         except requests.RequestException as e:
             print(f"[{sensor_id}] ERROR sending data: {e}")

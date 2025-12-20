@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # In-memory storage
 sensor_data_store: List["SensorData"] = []
@@ -49,16 +49,18 @@ class SensorData(BaseModel):
     vibration: float
     pressure: float
     rpm: int
+    severity: Optional[str] = "normal"
 
     class Config: # wrong needs fixing, has 
-        json_schema_extra = {
+        schema_extra = {
             "example": {
                 "sensor_id": "motor_01",
                 "timestamp": "2025-01-13T17:00:00",
                 "temperature": 92.5,
                 "vibration": 0.07,
                 "pressure": 118.0,
-                "rpm": 2150
+                "rpm": 2150,
+                "severity": "normal"
             }
         }
 
@@ -86,6 +88,7 @@ class Alert(BaseModel):
     sensor_id: str
     timestamp: datetime
     issues_detected: List[str]
+    severity: str
 
 
 class PredictionResponse(BaseModel):
@@ -166,7 +169,8 @@ def predict_failure(recent: int = 5):
             alerts_list.append(Alert(
                 sensor_id=reading.sensor_id,
                 timestamp=reading.timestamp,
-                issues_detected=issues
+                issues_detected=issues,
+                severity=reading.severity
             ))
 
     return PredictionResponse(
