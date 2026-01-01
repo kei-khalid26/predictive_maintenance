@@ -1,29 +1,41 @@
-version: "3.9"
+version: '3.9'
 
 services:
-  db:
+  pm_postgres:
     image: postgres:16
     container_name: pm_postgres
-    restart: always
     environment:
-      POSTGRES_DB: predictive_maintenance
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: test
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: predictive_maintenance
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pm_postgres_data:/var/lib/postgresql/data
 
-  backend:
-    build: ./backend
+  pm_backend:
+    build:
+      context: ./backend
     container_name: pm_backend
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:test@db:5432/predictive_maintenance
+    command: >
+      uvicorn app.main:app_kei --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend:/app
     ports:
       - "8000:8000"
-    command: uvicorn app.main:app_kei --host 0.0.0.0 --port 8000
+    depends_on:
+      - pm_postgres
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pm_postgres:5432/predictive_maintenance
+
+  pm_simulator:
+    build: ./simulator
+    container_name: pm_simulator
+    depends_on:
+      - pm_backend
+    environment:
+      API_URL: http://pm_backend:8000/sensor_data
 
 volumes:
-  postgres_data:
+  pm_postgres_data:
+

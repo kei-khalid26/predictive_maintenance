@@ -1,3 +1,24 @@
-venv/
+# Python cache files
 __pycache__/
+*.py[cod]
+*.pyc
+
+# Virtual environments
+venv/
 .env
+.env.*
+
+# Logs
+*.log
+
+#ide configs
+.vscode/
+
+# Docker-related
+*.pid
+docker-compose.override.yml
+pgdata/
+
+# OS files
+.DS_Store
+Thumbs.db

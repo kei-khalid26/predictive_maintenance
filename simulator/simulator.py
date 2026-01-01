@@ -2,10 +2,12 @@ import time
 import random
 import requests
 from datetime import datetime, timezone
+import os
 
-API_URL = "http://127.0.0.1:8000/sensor_data"
+API_URL = os.getenv("API_URL", "http://pm_backend:8000/sensor_data")
 
-SENSORS = ["motor_1", "motor_2"]
+
+SENSORS = ["motor_01", "motor_02"]
 SEND_INTERVAL_SEC = 2
 
 #moved from random range-based sampling to a stateful drift model because predictive maintenance relies on temporal trends rather than isolated anomalies.
@@ -15,6 +17,19 @@ VIBRATION_DRIFT_PER_CYCLE = 0.002
 
 # Probability of sudden fault (rare but possible)
 ANOMALY_PROBABILITY = 0.05
+
+API_URL = os.getenv("API_URL", "http://pm_backend:8000/sensor_data")
+
+# Wait until backend is ready
+while True:
+    try:
+        requests.get(API_URL.replace("/sensor_data", "/docs"), timeout=2)
+        print("Backend is ready, starting simulator...")
+        break
+    except requests.RequestException:
+        print("Waiting for backend to be ready...")
+        time.sleep(2)
+
 
 # Initial sensor state (IMPORTANT: persistent values)
 sensor_state = {
