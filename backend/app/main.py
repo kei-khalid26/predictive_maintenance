@@ -7,6 +7,44 @@ from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, Float, String, DateTime, select
+from ml.infer import AnomalyDetector
+from fastapi import BackgroundTasks
+
+# ML singleton
+
+detector = None
+
+def get_detector():
+    global detector
+    if detector is None:
+        detector = AnomalyDetector()
+    return detector
+
+async def run_ml_inference(reading):
+    async with AsyncSessionLocal() as session:
+        detector = get_detector()
+
+        X = [[
+            reading.temperature,
+            reading.vibration,
+            reading.pressure,
+            reading.rpm
+        ]]
+
+        score = detector.score(X)[0]
+        is_anomaly = int(score > 0.02)
+
+        record = AnomalyScoreDB(
+            sensor_id=reading.sensor_id,
+            timestamp=reading.timestamp,
+            reconstruction_error=float(score),
+            is_anomaly=is_anomaly
+        )
+
+        session.add(record)
+        await session.commit()
+
+        return score, is_anomaly
 
 #DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/predictive_maintenance")
 
@@ -76,6 +114,17 @@ class PredictionResponse(BaseModel):
     alerts_found: int
     alerts: List[Alert]
 
+class AnomalyScoreDB(Base):
+    __tablename__ = "anomaly_scores"
+
+    id = Column(Integer, primary_key=True)
+    sensor_id = Column(String, index=True)
+    timestamp = Column(DateTime(timezone=True))
+    reconstruction_error = Column(Float)
+    is_anomaly = Column(Integer)  # 0 / 1
+    model_version = Column(String, default="v1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 # ----------------------
 # FastAPI app
 # ----------------------
@@ -88,12 +137,17 @@ async def startup():
         await conn.run_sync(Base.metadata.create_all)
 
 @app_kei.post("/sensor_data")
-async def receive_sensor_data(data: SensorData):
+async def receive_sensor_data(data: SensorData, background_tasks: BackgroundTasks):
     async with AsyncSessionLocal() as session:
         payload = data.model_dump(exclude_unset=True)
         db_data = SensorDataDB(**payload)
         session.add(db_data)
         await session.commit()
+        await session.refresh(db_data)
+
+        background_tasks.add_task(run_ml_inference, db_data)
+
+
     return {"message": "Sensor data saved"}
 
 @app_kei.get("/sensor_data/recent", response_model=List[SensorData])
@@ -127,13 +181,35 @@ async def register_sensor_config(config: SensorConfig):
 @app_kei.get("/predict_failure", response_model=PredictionResponse)
 async def predict_failure(recent: int = 5):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(SensorDataDB).order_by(SensorDataDB.timestamp.desc()).limit(recent))
+    
+        result = await session.execute(
+            select(SensorDataDB)
+            .order_by(SensorDataDB.timestamp.desc())
+            .limit(recent)
+        )
         recent_data = result.scalars().all()
 
         if not recent_data:
             return PredictionResponse(checked_records=0, alerts_found=0, alerts=[])
 
+        config_result = await session.execute(select(SensorConfigDB))
+        config_dict = {c.sensor_id: c for c in config_result.scalars().all()}
+
+        anomaly_result = await session.execute(
+            select(AnomalyScoreDB)
+            .order_by(AnomalyScoreDB.timestamp.desc())
+            .limit(recent)
+        )
+
+        anomaly_dict = {}
+        for a in anomaly_result.scalars().all():
+         #if this sensor isn't in the dict, or this reading is newer, use it
+            if a.sensor_id not in anomaly_dict or a.timestamp > anomaly_dict[a.sensor_id].timestamp:
+                anomaly_dict[a.sensor_id] = a
+
+
         alerts_list = []
+
         # default thresholds
         default_thresholds = {
             "max_temperature": 80.0,
@@ -143,13 +219,10 @@ async def predict_failure(recent: int = 5):
             "max_rpm": 2000
         }
 
-        # fetch sensor configs
-        config_result = await session.execute(select(SensorConfigDB))
-        config_dict = {c.sensor_id: c for c in config_result.scalars().all()}
-
         for reading in recent_data:
             thresholds = config_dict.get(reading.sensor_id, default_thresholds)
             issues = []
+
             if reading.temperature > getattr(thresholds, "max_temperature", thresholds["max_temperature"]):
                 issues.append("High temperature")
             if reading.vibration > getattr(thresholds, "max_vibration", thresholds["max_vibration"]):
@@ -159,6 +232,11 @@ async def predict_failure(recent: int = 5):
                 issues.append("Pressure out of range")
             if reading.rpm > getattr(thresholds, "max_rpm", thresholds["max_rpm"]):
                 issues.append("RPM too high")
+
+            anomaly = anomaly_dict.get(reading.sensor_id)
+            if anomaly and anomaly.is_anomaly:
+                issues.append("ML anomaly detected")
+
             if issues:
                 alerts_list.append(Alert(
                     sensor_id=reading.sensor_id,
@@ -172,3 +250,4 @@ async def predict_failure(recent: int = 5):
             alerts_found=len(alerts_list),
             alerts=alerts_list
         )
+
